@@ -1,0 +1,19 @@
+# spid-file generated: Fri Apr 05 16:47:46 EDT 2019
+
+# FASTA Parser questions
+PARSER_FORMAT=FASTA
+
+# Select the type of the data:
+FASTA_PARSER_DATA_TYPE_QUESTION=DNA
+
+# Arlequin Writer questions
+WRITER_FORMAT=ARLEQUIN
+
+# Specify which data type should be included in the Arlequin file  (Arlequin can only analyze one data type per file):
+ARLEQUIN_WRITER_DATA_TYPE_QUESTION=DNA
+# Do you want to convert SNP/DNA to numeric format with 0 representing anchestral state (for derived (unfolded) SFS estimations in Arlequin)?
+ARLEQUIN_WRITER_ANCHESTRAL_STATE_QUESTION=false
+# Specify the locus/locus combination you want to write to the Arlequin file:
+ARLEQUIN_WRITER_LOCUS_COMBINATION_QUESTION=
+# Specify the DNA locus you want to write to the Arlequin file or write "CONCAT" for concatenation:
+ARLEQUIN_WRITER_CONCATENATE_QUESTION=
