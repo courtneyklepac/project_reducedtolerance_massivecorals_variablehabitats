@@ -1,4 +1,6 @@
-setwd("~/Documents/Dissertation/Data/Proj1/growth")
+# Ofu Island ch1 CBASS - written by Courtney Klepac
+# Physiological measurements - weekly growth rate
+setwd("~/Documents/Dissertation/Writing/manuscript/Ch1/data/")
 library(Hmisc)
 library(MASS)
 library(ggplot2)
@@ -13,13 +15,19 @@ library(stats)
 library(dplyr)
 library(qqplotr)
 library(cowplot)
+library(car)
+library(psych)
+library(PerformanceAnalytics)
+library(tidyverse)
+
+
 #read in file
 growth<-read.csv("AS_growth-repfix.csv", header=T)
 #set factor levels
 growth$colony<-paste0(growth$colony,growth$origin)
 growth$origin=factor(growth$origin,levels=unique(growth$origin))
 growth$dest=factor(growth$dest,levels=unique(growth$dest))
-growth$origin_dest=factor(growth$origin_dest,levels(growth$origin_dest)[c(1,2,4,3,5)])
+growth$origin_dest=factor(growth$origin_dest,levels(growth$origin_dest)[c(1,4,2,5,3)])
 growth$origin_dest=factor(growth$origin_dest,levels=unique(growth$origin_dest))
 growth$time=factor(growth$time,levels(growth$time)[c(2,1)])
 #creating interactions for post hoc comparisons
@@ -29,14 +37,12 @@ growth$desttime<-interaction(growth$dest,growth$time)
 
 summary(growth)
 str(growth)
-growth$origin_dest<-as.numeric(growth$origin_dest)
-growth$time<-as.numeric(growth$time)
 
-#########Porites############
+####Porites####
 #making two data frames for ea species
 por<-growth[growth$species=='por',]
-porwin<-growth[growth$time=='16-Jul',]
-porsum<-growth[growth$time=='16-Jan',]
+#porwin<-growth[growth$time=='16-Jul',]
+#porsum<-growth[growth$time=='16-Jan',]
 head(por)
 summary(por)
 
@@ -45,40 +51,17 @@ boxplot(grate ~ origin_dest + time, data=por, las=2)
 #shapiro
 aggregate(grate ~ time + origin + dest, data=por, FUN=function(x) shapiro.test(x)$p.value)
 #bartlett HOV
-for(i in c("Jan-16","Jul-16")){
+for(i in c("16-Jan","16-Jul")){
 	print(paste0("Timepoint",i))
 	print(bartlett.test(grate ~ origin_dest, data=por[por$time==i,]))
 }
+plotNormalHistogram(por$grate)
 
-resid<-lm(grate~origin*dest*time, data=por)
-plot(residuals(resid),which=1) #want random scatter; no apparent trendline
+resid<-lm(grate~origin_dest*time, data=por)
+plot(residuals(resid)) #want random scatter; no apparent trendline
 summary(resid)
-qqplot(residuals(resid),data=por,envelope=0.95,xlab="Theoretical Quantiles",ylab="Observed Quantiles") 
+qqPlot(resid,data=por) 
 
-#correlation#
-por.num=select(por, origin_dest,time,pgrate,mean,max,range,DR90)
-headtail(por.num)
-library(psych)
-
-corr.test(por.num, 
-          use = "pairwise",
-          method="pearson",
-          adjust="none",     # Can adjust p-values; see ?p.adjust for options
-          alpha=.05)
-
-          
-library(PerformanceAnalytics)
-
-chart.Correlation(por.num, 
-                   method="pearson",
-                   histogram=TRUE,
-                   pch=16)          
-          
-plot(pgrate ~ DR90, 
-     data=porsum, 
-     pch=16,
-     xlab = "DR90", 
-     ylab = "Proportion Growth")
 
 ##UNTRANSFORMED W/ ORI AND DEST SEPARATE
 grate.aov<-aov(grate~ time*origin*dest + Error(colony), data=por)
@@ -108,8 +91,7 @@ summary(glht(model, linfct=mcp(origin_dest="Tukey")), test = adjusted(type = "bo
 model <- lme(grate ~ grtime, random = ~ 1 | colony, por, na.action=na.exclude)
 summary(glht(model, linfct=mcp(grtime="Tukey")), test = adjusted(type = "bonferroni"))
 
-
-###########Goniastrea##########
+#####Goniastrea####
 gon<-growth[growth$species=='gon',]
 gon <- subset(gon, origin_dest != "LV_LV.Jan-16")#subsetting to remove since there is no data and messes up post hoc comparisons
 #interactions for post hoc comparisons
@@ -122,11 +104,15 @@ boxplot(grate ~ origin_dest + time, data=gon, las=2)
 #shapiro
 aggregate(grate ~ time + origin + dest, data=gon, FUN=function(x) shapiro.test(x)$p.value)
 #bartletts HOV
-for(i in c("Jan-16","Jul-16")){
+for(i in c("16-Jan","16-Jul")){
 	print(paste0("Timepoint",i))
 	print(bartlett.test(grate ~ origin_dest, data=gon[gon$time==i,]))
 }
 plotNormalHistogram(gon$grate)
+resid<-lm(grate~origin*dest*time, data=gon)
+plot(residuals(resid)) #want random scatter; no apparent trendline
+summary(resid)
+qqPlot(resid,data=gon) 
 
 
 ##UNTRANSFORMED WITH ORIGIN DEST SEPARATE##
@@ -153,7 +139,7 @@ miss1_mod<-lmer(grate ~ origin_dest + (1 | colony), gon, na.action=na.exclude)
 anova(miss1_mod)
 summary(glht(miss1_mod,linfct=mcp(origin_dest="Tukey")))
 
-############FIGURES####################
+#####FIGURES####
 #Rxn norm plot using ggplot
 #POR#
 sum=Summarize(grate~origin_dest+time, data=por, digits=3)
@@ -167,85 +153,53 @@ sum$time=factor(c("Jan-2016","Jan-2016","Jan-2016","Jan-2016","Jan-2016","Jul-20
 sum$time=factor(sum$time,levels=unique(sum$time))
 sum
 
-#poster figure
+#poster and publication figure
 library(cowplot)
 pd=position_dodge(.75)
 plot.growth<-ggplot(sum,aes(x=dest,y=mean,color=Origin)) + 
-	geom_errorbar(aes(ymin=mean - se,ymax=mean + se), width=0.2, size=0.7,position=pd) + 	geom_point(aes(shape=Origin),size=4,position=pd) + 
+	geom_errorbar(aes(ymin=mean - se,ymax=mean + se), width=0.2,position=pd) + 	
+  geom_point(aes(shape=Origin),size=4,position=pd) + 
 	facet_wrap(~time) +
 	theme_bw() + 
 	theme(plot.margin=margin(0.5,0.5,0.5,0.5,'cm'),
-		panel.grid.minor = element_blank(),
-		plot.background=element_blank()) + 				 								
-		scale_colour_manual(values=c("red","gold","blue")) + 					
-		coord_cartesian(xlim=c(0.5,3.3), ylim=c(0,0.4), expand=F) + 
+		panel.grid.minor = element_blank()) + 				 								
+	scale_color_manual(values=c("red","gold","blue")) + 					
+	coord_cartesian(xlim=c(0.5,3.25), ylim=c(0,0.4), expand=F) + 
 	ylab("Weekly Growth (g/wk)") + 
-	xlab("Transplant Site")
-save_plot("20200209_por_growthse.pdf", plot.growth,
+	xlab("")
+save_plot("20200417_por_growthsd.pdf", plot.growth,
           base_aspect_ratio = 1.3)
-          
-#publication figure
-pdf(file="2018.pdf")
-pd=position_jitterdodge(jitter.width=NULL,dodge.width=.75)
-ggplot(sum,aes(x=dest,y=mean,color=Origin)) + 
-	geom_errorbar(aes(ymin=mean - sd,ymax=mean + sd), width=0.2, size=0.7,position=pd) + 	geom_point(aes(shape=Origin),size=4,position=pd) + 
-	facet_wrap(~time) +
-	theme_bw() + 
-	theme(plot.margin=margin(0.5,0.5,0.5,0.5,'cm'),
-		panel.grid.minor = element_blank(),
-		plot.background=element_blank()) + 				 								
-		scale_colour_manual(values=c("red","gold","blue")) + 					
-		coord_cartesian(xlim=c(0.5,3.3), ylim=c(0,0.075), expand=F) + 
-	ylab("Proportion of Weekly Growth (g/wk)") + 
-	xlab("Transplant Site")
-dev.off()
 
 #GON#
 #Interaction plot with transplant site on x axis.
-sum=Summarize(grate~origin_dest+time, data=por, digits=3)
+sum=Summarize(grate~origin_dest+time, data=gon, digits=3)
 sum$Origin<-factor(c("HV","MV","LV","MV","LV","HV","MV","LV","MV","LV"))
 sum$dest<-factor(c("HV","HV","HV","MV","LV","HV","HV","HV","MV","LV"))
 sum$Origin=factor(sum$Origin,levels=unique(sum$Origin))
 sum$Time=factor(c("Jan-2016","Jan-2016","Jan-2016","Jan-2016","Jan-2016","Jul-2016","Jul-2016","Jul-2016","Jul-2016","Jul-2016"))
 sum$dest<-factor(c("HV","HV","HV","MV","LV","HV","HV","HV","MV","LV"))
+sum$dest=factor(sum$dest,levels=unique(sum$dest))
 sum$time=factor(sum$time,levels=unique(sum$time))
 sum$se = sum$sd / sqrt(sum$n)
 sum$se = signif(sum$se, digits=3)
 sum
 
-pdf(file="20180924_gon-grate-sdev-panel-siteshapes.pdf")
-pd=position_dodge(.75)
-ggplot(sum, aes(x=dest,y=mean,color=Origin)) + 
-geom_errorbar(aes(ymin=mean - sd,ymax=mean + sd), width=.2, size=0.7,position=pd) + geom_point(aes(shape=Origin),size=4,position=pd) + 
-facet_wrap(~time) +
-theme_bw() + 
-scale_fill_discrete(name="Origin") +
-theme(plot.margin=margin(0.5,0.5,0.5,0.5,'cm'),
-panel.grid.minor= element_blank(),
-plot.background=element_blank()) + 
-scale_colour_manual(values=c("red","gold","blue")) + 
-coord_cartesian(xlim=c(0.45,3.3), ylim=c(0,0.075), expand=F) + 
-ylab("Proportion of Weekly Growth (g/wk)") + 
-xlab("Transplant Site")
-dev.off()
-
-#poster figure
-library(cowplot)
+#poster and publication figure
 pd=position_dodge(.75)
 plot.growth<-ggplot(sum,aes(x=dest,y=mean,color=Origin)) + 
-	geom_errorbar(aes(ymin=mean - sd,ymax=mean + sd), width=0.2, size=0.7,position=pd) + 	geom_point(aes(shape=Origin),size=4,position=pd) + 
+	geom_errorbar(aes(ymin=mean - se,ymax=mean + se), width=0.2, size=0.7,position=pd) + 	geom_point(aes(shape=Origin),size=4,position=pd) + 
 	facet_wrap(~Time) +
 	theme_bw() + 
 	theme(plot.margin=margin(0.5,0.5,0.5,0.5,'cm'),
-		panel.grid.minor = element_blank(),
-		plot.background=element_blank()) + 				 								
+		panel.grid.minor = element_blank()) + 				 								
 		scale_colour_manual(values=c("red","gold","blue")) + 					
-		coord_cartesian(xlim=c(0.5,3.3), ylim=c(0,0.075), expand=F) + 
-	ylab("Proportion of Weekly Growth (g/wk)") + 
-	xlab("Transplant Site")
-save_plot("20181220_gon_growth_poster.pdf", plot.growth,
+		coord_cartesian(xlim=c(0.5,3.3), ylim=c(0,0.15), expand=F) + 
+	ylab("Weekly Growth (g/wk)") + 
+	xlab("")
+save_plot("20200417_gon_growthse_poster.pdf", plot.growth,
           base_aspect_ratio = 1.3)
 
+####MISC####
 #scatterplot of growth in the HV pool on y against growth in native pool on x axis
 growth<-read.csv("fig.csv", header=T)
 #set factor levels
