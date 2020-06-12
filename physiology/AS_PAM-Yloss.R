@@ -1,13 +1,24 @@
-##The loss in Fv/Fm from 0 to 21hrs##
-
-setwd("~/Documents/Dissertation/Data/Proj1/PAM")
+# Ofu Island ch1 CBASS - written by Courtney Klepac
+# Physiological measurements - Fv/Fm from 0 to 21hrs##
+setwd("~/Documents/Dissertation/Writing/manuscripts/Ch1/data/fvfm")
 library(Hmisc)
 library(MASS)
-library(nlme)
-library(lme4)
-library(multcomp)
 library(ggplot2)
+library(lme4)
 library(FSA)
+library(qqplotr)
+library(rcompanion)
+require(multcomp)
+require(nlme)
+require(graphics)
+library(stats)
+library(dplyr)
+library(qqplotr)
+library(cowplot)
+library(car)
+library(psych)
+library(PerformanceAnalytics)
+library(tidyverse)
 
 #read in file
 pam<-read.csv("AS_PAM_ch1-2.csv", header=T)
@@ -32,74 +43,120 @@ pam$timetrt<-interaction(pam$time,pam$trt)
 pam$grtime<-interaction(pam$origin_dest,pam$time)
 pam$all<-interaction(pam$time,pam$origin_dest,pam$trt)
 
-#########Porites############
+####Porites####
 por<-pam[pam$species=='por',]
 summary(por)
 porheat<-por[por$trt=="heat",]
 porcont<-por[por$trt=="cont",]
 por$mqy<-(1-por$X21)
 
-
-######testing normalized loss in Y########
+##testing normalized loss in fv/fm##
 #looking for outliers
-boxplot(por$X21_Jan-16~por$origin, xlab="site", data=por)
-hist(por$X21_Jan-16,breaks=20)
-resid<-lm(X21~origin*dest*time, data=por)
-plot(resid,which=1) #want random scatter; no apparent trendline
-#qqPlot(resid,data=por,na.action=na.exclude,envelope=0.95,xlab="Theoretical Quantiles",ylab="Observed Quantiles") #try a transform if data are non-normal
+boxplot(Ylossnorm~origin_dest + time + trt, xlab="site", data=por)
 #shapiro
-aggregate(X21 ~ time + origin + dest +trt, data=por, FUN=function(x) shapiro.test(x)$p.value)
+aggregate(Ylossnorm ~ time + origin + dest +trt, data=por, FUN=function(x) shapiro.test(x)$p.value)
 #bartlett HOV
-for(i in c("Jan-16","Jul-16")){
+for(i in c("16-Jan","16-Jul")){
 	print(paste0("Timepoint",i))
-	print(bartlett.test(X21 ~ origin_dest, data=por[por$time==i,]))
+	print(bartlett.test(Ylossnorm ~ origin_dest, data=por[por$time==i,]))
 }
+plotNormalHistogram(por$Ylossnorm)
+
+resid<-lm(Ylossnorm~origin*dest*time, data=por)
+plot(resid,which=1) #want random scatter; no apparent trendline
+qqPlot(resid,data=por,na.action=na.exclude,envelope=0.95) #try a transform if data are non-normal
+
 
 ####repeated measures AOV -> to build in colony as a random effect####
 ###FIRST KEEP ORI AND DEST SEPARATE###
-X21.aov<-aov(X21 ~ time*origin*dest*trt + Error(colony), data=por)
-summary(X21.aov)
+Ylossnorm.aov<-aov(Ylossnorm ~ time*origin*dest*trt + Error(colony), data=por)
+summary(Ylossnorm.aov)
 ###Tukeys lme###
 #origin 
-model <- lme(X21 ~ origin, random = ~ 1 | colony, por, na.action=na.exclude)
+model <- lme(Ylossnorm ~ origin, random = ~ 1 | colony, por, na.action=na.exclude)
 summary(glht(model, linfct=mcp(origin="Tukey")), test = adjusted(type = "bonferroni"))
 #orign*trt
-model <- lme(X21 ~ oritrt, random = ~ 1 | colony, por, na.action=na.exclude)
+model <- lme(Ylossnorm ~ oritrt, random = ~ 1 | colony, por, na.action=na.exclude)
 summary(glht(model, linfct=mcp(oritrt="Tukey")), test = adjusted(type = "bonferroni"))
 #trt
-model <- lme(X21 ~ trt, random = ~ 1 | colony, por, na.action=na.exclude)
+model <- lme(Ylossnorm ~ trt, random = ~ 1 | colony, por, na.action=na.exclude)
 summary(glht(model, linfct=mcp(trt="Tukey")), test = adjusted(type = "bonferroni"))
 
 ###COMBINING ORI AND DEST###
-X21.aov<-aov(X21 ~ time*origin_dest*trt + Error(colony), data=por)
-summary(X21.aov)
-pam.model <- lmer(X21 ~ origin_dest * time  + (1|colony) , data = por)
-summary(pam.model)
-anova(pam.model)
-rand(pam.model)
-confint(pam.model,oldNames=F)
-pam.emms.reef <- emmeans(pam.model, pairwise ~ time|origin_dest, weights = "proportional", adjust="none")
-summary(pam.emms.reef$emmeans)
-
-# P.value adjustment of the Bonferroni
-rbind(pam.emms.reef$contrasts, adjust="bonferroni")
+Ylossnorm.aov<-aov(Ylossnorm ~ time*origin_dest*trt + Error(colony), data=por)
+summary(Ylossnorm.aov)
 
 #time*ori_dest*trt
-model <- lme(X21 ~ all, random = ~ 1 | colony, por, na.action=na.exclude)
+model <- lme(Ylossnorm ~ all, random = ~ 1 | colony, por, na.action=na.exclude)
 summary(glht(model, linfct=mcp(all="Tukey")), test = adjusted(type = "bonferroni"))
 #origin_dest
-model <- lme(X21 ~ origin_dest, random = ~ 1 | colony, por, na.action=na.exclude)
+model <- lme(Ylossnorm ~ origin_dest, random = ~ 1 | colony, por, na.action=na.exclude)
 summary(glht(model, linfct=mcp(origin_dest="Tukey")), test = adjusted(type = "bonferroni"))
 #origin_dest*trt
-model <- lme(X21 ~ grtrt, random = ~ 1 | colony, por, na.action=na.exclude)
+model <- lme(Ylossnorm ~ grtrt, random = ~ 1 | colony, por, na.action=na.exclude)
 summary(glht(model, linfct=mcp(grtrt="Tukey")), test = adjusted(type = "bonferroni"))
 #time
-model <- lme(X21 ~ time, random = ~ 1 | colony, por, na.action=na.exclude)
+model <- lme(Ylossnorm ~ time, random = ~ 1 | colony, por, na.action=na.exclude)
 summary(glht(model, linfct=mcp(time="Tukey")), test = adjusted(type = "bonferroni"))
 
 
-##############################################
-#Interaction plot using ggplot
+####Goniastrea####
+gon<-pam[pam$species=='gon',]
+summary(gon)
+gonheat<-gon[gon$trt=="heat",]
+goncont<-gon[gon$trt=="cont",]
+gon$mqy<-(1-gon$X21)
+
+##testing normalized loss in fv/fm##
+#looking for outliers
+boxplot(Ylossnorm~origin_dest + time + trt, xlab="site", data=gon)
+#shapiro
+aggregate(Ylossnorm ~ time + origin + dest +trt, data=gon, FUN=function(x) shapiro.test(x)$p.value)
+#bartlett HOV
+for(i in c("16-Jan","16-Jul")){
+  print(paste0("Timepoint",i))
+  print(bartlett.test(Ylossnorm ~ origin_dest, data=gon[gon$time==i,]))
+}
+plotNormalHistogram(gon$Ylossnorm)
+
+resid<-lm(Ylossnorm~origin*dest*time, data=gon)
+plot(resid,which=1) #want random scatter; no apparent trendline
+qqPlot(resid,data=gon,na.action=na.exclude,envelope=0.95) #try a transform if data are non-normal
+
+
+####repeated measures AOV -> colony as a random effect####
+###FIRST KEEP ORI AND DEST SEPARATE###
+Ylossnorm.aov<-aov(Ylossnorm ~ time*origin*dest*trt + Error(colony), data=gon)
+summary(Ylossnorm.aov)
+###Tukeys lme###
+#time
+model <- lme(Ylossnorm ~ time, random = ~ 1 | colony, por, na.action=na.exclude)
+summary(glht(model, linfct=mcp(time="Tukey")), test = adjusted(type = "bonferroni"))
+#time*trt
+model <- lme(Ylossnorm ~ timetrt, random = ~ 1 | colony, gon, na.action=na.exclude)
+summary(glht(model, linfct=mcp(timetrt="Tukey")), test = adjusted(type = "bonferroni"))
+
+##COMBINING ORIGIN AND DEST###
+Ylossnorm.aov<-aov(Ylossnorm ~ time*origin_dest*trt + Error(colony), data=gon)
+summary(Ylossnorm.aov)
+#time 
+model <- lme(Ylossnorm ~ time, random = ~ 1 | colony, gon, na.action=na.exclude)
+summary(glht(model, linfct=mcp(time="Tukey")), test = adjusted(type = "bonferroni"))
+#orign_dest*trt
+model <- lme(Ylossnorm ~ grtrt, random = ~ 1 | colony, gon, na.action=na.exclude)
+summary(glht(model, linfct=mcp(grtrt="Tukey")), test = adjusted(type = "bonferroni"))
+#time*trt
+model <- lme(Ylossnorm ~ timetrt, random = ~ 1 | colony, gon, na.action=na.exclude)
+summary(glht(model, linfct=mcp(timetrt="Tukey")), test = adjusted(type = "bonferroni"))
+
+##To generate a priori contrasts in an unbalanced random mixed model
+miss1_mod<-lmer(Ylossnorm ~ all + (1 | colony), gon, na.action=na.exclude)
+anova(miss1_mod)
+summary(glht(miss1_mod,linfct=mcp(all="Tukey")), test = adjusted(type = "bonferroni"))
+
+####Plots####
+#Porites#
+#Plot of 21hr values
 #plot with dest as x and points are origin
 sum=Summarize(X21~grtrt+time, data=por, digits=3)
 sum$se = sum$sd / sqrt(sum$n)
@@ -112,42 +169,23 @@ sum$dest=factor(sum$dest,levels=unique(sum$dest))
 sum$time=factor(sum$time,levels=unique(sum$time))
 sum$trt=factor(c("cont","cont","cont","cont","cont","heat","heat","heat","heat","heat","cont","cont","cont","cont","cont","heat","heat","heat","heat","heat"))
 sum$trt=factor(sum$trt,levels=unique(sum$trt))
-sum$time=factor(sum$time,levels=(sum$time)[c(2,1)])
 
-
-summary(sum)
-
-#poster figure
+#poster and publication figure
 pd=position_dodge(.75)
-plot.pam<-ggplot(sum,aes(x=dest,y=mean,color=trt)) + 
-	geom_point(aes(shape=Origin),size=4,position=pd) + 
-	geom_errorbar(aes(ymin=mean - se,ymax=mean + se), width=.2,position=pd) + 
-	facet_wrap(~time) +
-	theme_bw() + 																		
-	theme(plot.margin=margin(0.5,0.5,0.5,0.5,'cm'), panel.grid.minor=element_blank()) + 
+plot.pam<-ggplot(sum,aes(x=dest,y=mean,fill=Origin,color=trt)) + 
+  geom_point(aes(shape=Origin),size=3,position=pd) + 
+  geom_errorbar(aes(ymin=mean - se,ymax=mean + se), width=.2,position=pd) + 
+  facet_wrap(~time) +
+  theme_bw() + 																		
+  theme(plot.margin=margin(0.5,0.5,0.5,0.5,'cm'), panel.grid.minor=element_blank()) + 
   scale_color_manual(values = c('gray','black'), name = "Treatment") +
-	coord_cartesian(xlim=c(0.5,3.25), ylim=c(0,0.65), expand=F) + 
-	ylab("Maximum Quantum Yield (Fv/Fm)\n after Acute Heat Stress") + 
+  coord_cartesian(xlim=c(0.5,3.4), ylim=c(0,0.6), expand=F) + 
+  ylab("Maximum Quantum Yield (Fv/Fm)\n after Acute Heat Stress") + 
   xlab("Transplant Site")
 save_plot("20200214_por_fvfm21hrse.pdf", plot.pam,
           base_aspect_ratio = 1.3)
-	
 
-#publication figure
-pdf(file="porheat-X21-sd-panel-siteshape.pdf")
-pd=position_dodge(.75)
-ggplot(sum,aes(x=dest,y=mean,color=Origin)) + 
-	geom_point(aes(shape=Origin),size=4,position=pd) + 
-	geom_errorbar(aes(ymin=mean - sd,ymax=mean + sd), width=.2,position=pd) + 
-	facet_wrap(~time) +
-	theme_bw() + 																		
-	theme(plot.margin=margin(0.5,0.5,0.5,0.5,'cm'), panel.grid.minor=element_blank()) + 	scale_colour_manual(values=c("red","gold","blue")) + 						
-	coord_cartesian(xlim=c(0.5,3.25), ylim=c(0,1.0), expand=F) + 
-	ylab("Proportion of Maximum Quantum Yield (Fv/Fm) after Acute Heat Stress") + 
-	xlab("Transplant Site")
-dev.off()
-
-#need to incorporate both heat and control in the plot
+#boxplot to incorporate both heat and control 
 pam <- ggplot(data=por, 
               aes(x=dest, y=mqy, label= time, fill=origin, color=trt)) +
   scale_fill_manual(values = c ("red", "gold", "blue"), name = "Reef site") +
@@ -158,66 +196,10 @@ pam <- ggplot(data=por,
   facet_grid(~time, space = "free", scales = "free")+ #this can also be used but rows and columns have to be specified -> facet_grid(. ~ experiment)
   theme_bw() +
   xlab(label = "Transplant Site") + ylab(label = "Fv/Fm")
+ggsave("./fvfm-trt_boxplot_20200209.pdf", width = 10, height = 6)
 
-ggsave("./chl-trt_boxplot_20200209.pdf", width = 10, height = 6)
-
-
-#########Goniastrea############
-gon<-pam[pam$species=='gon',]
-summary(pam)
-gonheat<-gon[gon$trt=="heat",]
-goncont<-gon[gon$trt=="cont",]
-gon$mqy<-(1-gon$X21)
-
-######testing normalized loss in Y########
-#looking for outliers
-boxplot(gon$X21_Jan-16~gon$origin, xlab="site", data=gon)
-hist(gon$X21_Jan-16,breaks=20)
-resid<-lm(X21~origin*dest*time, data=gon)
-plot(resid,which=1) #want random scatter; no apparent trendline
-qqPlot(resid,data=gon,na.action=na.exclude,envelope=0.95,xlab="Theoretical Quantiles",ylab="Observed Quantiles") #try a transform if data are non-normal
-#shapiro
-aggregate(X21 ~ time + origin + dest +trt, data=gon, FUN=function(x) shapiro.test(x)$p.value)
-#bartlett HOV
-for(i in c("Jan-16","Jul-16")){
-	print(paste0("Timepoint",i))
-	print(bartlett.test(X21 ~ origin_dest, data=gon[gon$time==i,]))
-}
-
-
-####repeated measures AOV -> to build in colony as a random effect####
-###FIRST KEEP ORI AND DEST SEPARATE###
-X21.aov<-aov(X21 ~ time*origin*dest*trt + Error(colony), data=gon)
-summary(X21.aov)
-###Tukeys lme###
-#time
-model <- lme(X21 ~ time, random = ~ 1 | colony, por, na.action=na.exclude)
-summary(glht(model, linfct=mcp(time="Tukey")), test = adjusted(type = "bonferroni"))
-#time*trt
-model <- lme(X21 ~ timetrt, random = ~ 1 | colony, gon, na.action=na.exclude)
-summary(glht(model, linfct=mcp(timetrt="Tukey")), test = adjusted(type = "bonferroni"))
-
-##COMBINING ORIGIN AND DEST###
-X21.aov<-aov(X21 ~ time*origin_dest*trt + Error(colony), data=gon)
-summary(X21.aov)
-#time 
-model <- lme(X21 ~ time, random = ~ 1 | colony, gon, na.action=na.exclude)
-summary(glht(model, linfct=mcp(time="Tukey")), test = adjusted(type = "bonferroni"))
-#orign_dest*trt
-model <- lme(X21 ~ grtrt, random = ~ 1 | colony, gon, na.action=na.exclude)
-summary(glht(model, linfct=mcp(grtrt="Tukey")), test = adjusted(type = "bonferroni"))
-#time*trt
-model <- lme(X21 ~ all, random = ~ 1 | colony, gon, na.action=na.exclude)
-summary(glht(model, linfct=mcp(all="Tukey")), test = adjusted(type = "bonferroni"))
-
-#***********#
-##To generate a priori contrasts in an unbalanced random mixed model
-miss1_mod<-lmer(X21 ~ all + (1 | colony), gon, na.action=na.exclude)
-anova(miss1_mod)
-summary(glht(miss1_mod,linfct=mcp(all="Tukey")), test = adjusted(type = "bonferroni"))
-
-##############################################
-#Interaction plot using ggplot
+#Goniastrea#
+summary(gon)
 #plot with dest as x and points are origin
 sum=Summarize(X21~grtrt+time, data=gon, digits=3)
 sum$se = sum$sd / sqrt(sum$n)
