@@ -1,0 +1,482 @@
+/********************************************************
+ * PID RelayTempOutput Example
+ * Same as basic example, except that this time, the TempOutput
+ * is going to a digital pin which (we presume) is controlling
+ * a relay.  The pid is designed to TempOutput an analog value,
+ * but the relay can only be On/Off.
+ *
+ *   To connect them together we use "time proportioning
+ * control"  Tt's essentially a really slow version of PWM.
+ * First we decide on a window size (5000mS say.) We then 
+ * set the pid to adjust its TempOutput between 0 and that window
+ * size.  Lastly, we add some logic that translates the PID
+ * TempOutput into "Relay On Time" with the remainder of the 
+ * window being "Relay Off Time"
+ ********************************************************/
+
+// Libraries for the Adafruit RGB/LCD Shield
+#include <Wire.h>
+#include <Adafruit_MCP23017.h>
+#include <Adafruit_RGBLCDShield.h>
+// SD card shield library
+#include <SD.h>
+#include <SPI.h>
+// PID Library
+#include <PID_v1.h>
+#include <PID_AutoTune_v0.h>
+// So we can save and retrieve settings
+#include <EEPROM.h>
+// Libraries for the DS18B20 Temperature Sensor
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+// The shield uses the I2C SCL and SDA pins. On classic Arduinos
+// this is Analog 4 and 5 so you can't use those for analogRead() anymore
+// However, you can connect other I2C sensors to the I2C bus and share
+// the I2C bus.
+Adafruit_RGBLCDShield lcd = Adafruit_RGBLCDShield();
+#define GREEN 0x2
+#define RED 0x1
+#define YELLOW 0x3
+#define GREEN 0x2
+#define TEAL 0x6
+#define BLUE 0x4
+#define VIOLET 0x5
+#define WHITE 0x7
+
+// ***** PID TUNING CONSTANTS ****
+
+#define CONTROL_HOLD_TEMP 28
+#define HOT_HOLD_TEMP 28
+#define TEMP_OFFSET_TOLERANCE 0.5
+
+// ***** PID TUNING CONSTANTS ****
+#define KP 2000//5000//600 //IN FIELD - Chillers had higher lag, so I adjusted the TPCwindow and KP to 20 secs, kept all proportional
+#define KI 10//KP/100//27417.54//240 // March 20 IN FIELD - with 1 deg steps, no momentum to take past P control, so doubled I. (10->40)
+#define KD 0//40  //
+
+#define RELAY_ON 0
+#define RELAY_OFF 1
+#define TempSensors 2
+#define HIndex 0
+#define CIndex 1
+#define CHeaterRelay  5  // Arduino Digital I/O pin number
+#define CChillRelay  6 // Arduino Digital I/O pin number
+#define HHeaterRelay  7  // Arduino Digital I/O pin number
+#define HChillRelay  8  // Arduino Digital I/O pin number
+#define BAUD 9600
+
+// Make two files, one for logging the data and one for reading in the setpoints
+File logFile;
+File setpoints;
+//define logfile name
+String printdate="20160118_CNK_Gret_downto28hold";  // No spaces, dashes, or underscores
+// Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
+OneWire oneWire(TempSensors);
+// Pass our oneWire reference to Dallas Temperature. 
+DallasTemperature sensors(&oneWire);
+// arrays to hold device addresses
+DeviceAddress HThermometer, CThermometer;
+
+// select the pins used on the LCD panel
+//LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
+
+//Define Variables we'll Need
+//Temperature Variables
+double HSetPoint,HTempInput,HTempOutput,CSetPoint,CTempInput,CTempOutput,CoffT,HoffT;
+
+// Time Windows: Update LCD 2/sec; Serial, Ramp Status 1/sec, TPC 1/2 sec
+unsigned int LCDwindow=500,SERIALwindow=1000,STEPwindow=1000,i,HOLDtsec;
+// misc.
+int NegIfRamping=-1,TPCwindow = KP;
+unsigned int numberOfSensors=0,RampStep=0,SerialOutCount=101;
+
+// Display Conversion Strings
+char HSetPointStr[3],HTempInputStr[5],CSetPointStr[3],CTempInputStr[5],HTempOutputStr[4],CTempOutputStr[4],ErrStr[4];
+char hrsStr[3]="0",minsStr[3]="0",secsStr[3]="0",RampStatusStr[2]="R",holdminsStr[4]="NA",holdsecsStr[4]="NA";
+char CRelayStateStr[4]="OFF",HRelayStateStr[4]="OFF";
+
+//Specify the links and initial tuning parameters
+double kp=KP,ki=KI,kd=KD;//kp=350,ki= 300,kd=50;
+
+// EEPROM addresses for persisted data
+const int SpAddress = 0;
+const int KpAddress = 8;
+const int KiAddress = 16;
+const int KdAddress = 24;
+
+// PID Controllers
+PID H_PID(&HTempInput, &HTempOutput, &HSetPoint,kp,ki,kd, DIRECT);
+//PID HC_PID(&HTempInput, &HTempOutput, &HSetPoint,kp,ki,kd, DIRECT);
+PID C_PID(&CTempInput, &CTempOutput, &CSetPoint,kp,ki,kd, DIRECT);
+//PID CC_PID(&CTempInput, &CTempOutput, &CSetPoint,kp,ki,kd, DIRECT);
+
+// 10 second Time Proportional Output window
+int WindowSize = 10000; 
+unsigned long windowStartTime;
+
+// ************************************************
+// Auto Tune Variables and constants
+// ************************************************
+byte ATuneModeRemember=2;
+
+double aTuneStep=500;
+double aTuneNoise=1;
+unsigned int aTuneLookBack=20;
+
+boolean tuning = false;
+
+PID_ATune aTune(&HTempInput, &HTempOutput);
+//PID_ATune aTune(&CTempInput, &CTempOutput);
+
+byte degree[8] = // define the degree symbol 
+{ 
+ B00110, 
+ B01001, 
+ B01001, 
+ B00110, 
+ B00000,
+ B00000, 
+ B00000, 
+ B00000 
+}; 
+
+//TimeKeepers
+unsigned long now_ms = millis(),hrs=0,mins=0,secs=0,SERIALt,LCDt,TPCt,STEPt,HOLDt;
+
+
+// ************************************************
+// States for state machine
+// ************************************************
+enum operatingState { OFF = 0, SETP, RUN, TUNE_P, TUNE_I, TUNE_D, AUTO};
+operatingState opState = OFF;
+
+void setup()
+{
+  // ***** TEMP CONTROLLERS *****
+  //initialize the variables *****
+  HSetPoint = HOT_HOLD_TEMP; 
+  CSetPoint = CONTROL_HOLD_TEMP;
+
+  //-------( Initialize Pins so relays are inactive at reset)----
+  digitalWrite(CHeaterRelay, RELAY_OFF);
+  digitalWrite(CChillRelay, RELAY_OFF);
+  digitalWrite(HHeaterRelay, RELAY_OFF);
+  digitalWrite(HChillRelay, RELAY_OFF);
+  //---( THEN set pins as Outputs )----  
+  pinMode(CHeaterRelay, OUTPUT);   
+  pinMode(CChillRelay, OUTPUT);   
+  pinMode(HHeaterRelay, OUTPUT);   
+  pinMode(HChillRelay, OUTPUT);   
+  delay(2000); //Check that all relays are inactive at Reset
+
+  // ***** INITALIZE OUTPUT *****
+  lcd.begin(16, 2);              // start the library
+  lcd.setBacklight(VIOLET);
+  Serial.begin(BAUD);          //  setup serial for sensor
+
+  //tell the PID to range between 0 and the full window size
+  //turn the PID on
+  H_PID.SetMode(AUTOMATIC);
+  C_PID.SetMode(AUTOMATIC);
+  H_PID.SetOutputLimits(-TPCwindow, TPCwindow);//cooling range = -TPCwindow->0,  heating range = 0->TPCwindow
+  H_PID.SetTunings(kp,ki,kd);
+  C_PID.SetOutputLimits(-TPCwindow, TPCwindow);//cooling range = -TPCwindow->0,  heating range = 0->TPCwindow
+  C_PID.SetTunings(kp,ki,kd);
+
+  // ***** INPUT *****
+  // Start up the TempSensor library
+  sensors.begin(); // IC Default 9 bit. If you have troubles consider upping it 12. Ups the delay giving the IC more time to process the temperature measurement
+  // locate devices on the bus
+  Serial.print("Locating devices...");
+  Serial.print("Found ");
+  Serial.print(sensors.getDeviceCount(), DEC);
+  Serial.println(" devices.");
+  
+  // method 1: by index
+  if (!sensors.getAddress(HThermometer, 0)) Serial.println("Unable to find address for Device 0"); 
+  if (!sensors.getAddress(CThermometer, 1)) Serial.println("Unable to find address for Device 1"); 
+  // show the addresses we found on the bus
+  Serial.print("Device 0 Address: ");
+  printAddress(HThermometer);
+  Serial.println();
+
+  Serial.print("Device 1 Address: ");
+  printAddress(CThermometer);
+  Serial.println();
+
+  // set the resolution to 12 bit
+  sensors.setResolution(HThermometer, 12);
+  sensors.setResolution(CThermometer, 12);
+
+  // Test out the SD card
+  Serial.print("Initializing SD card...");
+
+  if (!SD.begin(4)) {
+    Serial.println("initialization failed!");
+    return;
+  }
+  Serial.println("initialization done.");
+  
+  // **** WAIT FOR SERIAL SET-UP ****
+  while(Serial.available()==0){
+    //now_ms = millis();
+    lcd.clear();
+    lcd.setCursor(0,0);            
+    lcd.print("OK:PressEnter");
+    Serial.println();
+    Serial.println();
+    Serial.print("Arduino Module Ready to Run.");
+    Serial.println();
+    Serial.print("Press Enter to Begin");
+    Serial.println();
+    delay(5000);
+  } // Hang until serial input...*/
+  
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("PrintDate is:");
+  lcd.setCursor(0,1);
+  lcd.print(printdate);
+  Serial.println("PrintDate is:");
+  Serial.println(printdate);
+  delay(3000);
+  lcd.clear();
+  lcd.setCursor(0,0);            
+  lcd.print("1. 2s Pause...");  
+  Serial.println();
+  Serial.println();
+  Serial.print("Initialization sequence.");  
+  Serial.println();
+  Serial.print("1. 2s Pause...");  
+  Serial.println();
+  delay(2000);
+  Serial.println();
+  
+  // Relay Tests
+  lcd.clear();
+  lcd.setCursor(0,0);  
+  //Test Relay 1 "Control Heater"  
+  lcd.print("1. ControlHeatr");
+  Serial.print("1. ControlHeatr");
+  Serial.println();
+  digitalWrite(CHeaterRelay, RELAY_ON);
+  delay(2000);
+  digitalWrite(CHeaterRelay, RELAY_OFF);
+  //Test Relay 2 "Control Chiller"  
+  lcd.clear();
+  lcd.setCursor(0,0);            
+  lcd.print("2. ContChillr");
+  Serial.print("2. ContChillr");
+  Serial.println();
+  digitalWrite(CChillRelay, RELAY_ON);
+  delay(2000);
+  digitalWrite(CChillRelay, RELAY_OFF);
+  //Test Relay 3 "Heated Heater"  
+  lcd.clear();
+  lcd.setCursor(0,0);            
+  lcd.print("3. HeatedHeatr");
+  Serial.print("3. HeatedHeatr");
+  Serial.println();
+  digitalWrite(HHeaterRelay, RELAY_ON);
+  delay(2000);
+  digitalWrite(HHeaterRelay, RELAY_OFF);
+  //Test Relay 4 "Heated Chiller"  
+  lcd.clear();
+  lcd.setCursor(0,0);            
+  lcd.print("4. HeatedChillr");
+  Serial.print("4. HeatedChillr");
+  Serial.println();
+  digitalWrite(HChillRelay, RELAY_ON);
+  delay(2000);
+  digitalWrite(HChillRelay, RELAY_OFF);
+  Serial.println();
+
+}
+
+// function to print a device address
+void printAddress(DeviceAddress deviceAddress)
+{
+  for (uint8_t i = 0; i < 8; i++)
+  {
+    // zero pad the address if necessary
+    if (deviceAddress[i] < 16) Serial.print("0");
+    Serial.print(deviceAddress[i], HEX);
+  }
+}
+
+// function to print the temperature for a device
+void printTemperature(DeviceAddress deviceAddress)
+{
+  float tempC = sensors.getTempC(deviceAddress);
+  Serial.print("Temp C: ");
+  Serial.print(tempC);
+}
+
+// function to print a device's resolution
+void printResolution(DeviceAddress deviceAddress)
+{
+  Serial.print("Resolution: ");
+  Serial.print(sensors.getResolution(deviceAddress));
+  Serial.println();    
+}
+
+// main function to print information about a device
+void printData(DeviceAddress deviceAddress)
+{
+  Serial.print("Device Address: ");
+  printAddress(deviceAddress);
+  Serial.print(" ");
+  printTemperature(deviceAddress);
+  Serial.println();
+}
+
+void loop()
+{
+  // ***** Time Keeping *****
+  now_ms = millis();
+  // Make Milliseconds into sane time
+  hrs=now_ms/3600000;
+  mins=(now_ms-(hrs*3600000))/60000;
+  secs=(now_ms-(hrs*3600000+mins*60000))/1000;  
+  
+  // ***** INPUT FROM TEMPERATURE SENSORS *****
+  sensors.requestTemperatures(); // Send the command to get temperatures
+  HTempInput=sensors.getTempCByIndex(HIndex); // Why "byIndex"? You can have more than one IC on the same bus. 0 refers to the first IC on the wire
+  CTempInput=sensors.getTempCByIndex(CIndex); // Why "byIndex"? You can have more than one IC on the same bus. 1 refers to the second IC on the wire
+
+  // ***** UPDATE PIDs *****
+  H_PID.Compute();
+  //HC_PID.Compute();
+  C_PID.Compute();
+  //CC_PID.Compute();
+  
+  //***** UPDATE TIME WINDOW for TIME PROPORTIONAL CONTROL *****
+  if(now_ms - TPCt>TPCwindow) { TPCt += TPCwindow;  }//time to shift the Relay Window
+  
+  //***** UPDATE RELAY STATE for TIME PROPORTIONAL CONTROL *****
+  // Control Tank
+  if(CTempOutput <0){//Chilling
+    if(-CTempOutput > now_ms - TPCt) {digitalWrite(CChillRelay,RELAY_ON);digitalWrite(CHeaterRelay,RELAY_OFF);strcpy(CRelayStateStr,"CHL");} 
+    else {digitalWrite(CChillRelay,RELAY_OFF);digitalWrite(CHeaterRelay,RELAY_OFF);strcpy(CRelayStateStr,"OFF");}
+  }else{//Heating
+    if(CTempOutput > now_ms - TPCt) {digitalWrite(CHeaterRelay,RELAY_ON);digitalWrite(CChillRelay,RELAY_OFF);strcpy(CRelayStateStr,"HTR");} 
+    else {digitalWrite(CHeaterRelay,RELAY_OFF);digitalWrite(CChillRelay,RELAY_OFF);strcpy(CRelayStateStr,"OFF");}
+  }
+  // Heated Tank
+  if(HTempOutput <0){//Chilling
+    if(-HTempOutput > now_ms - TPCt) {digitalWrite(HChillRelay,RELAY_ON);digitalWrite(HHeaterRelay,RELAY_OFF);strcpy(HRelayStateStr,"CHL");} 
+    else {digitalWrite(HChillRelay,RELAY_OFF);digitalWrite(HHeaterRelay,RELAY_OFF);strcpy(HRelayStateStr,"OFF");}
+  }else{//Heating
+    if(HTempOutput > now_ms - TPCt) {digitalWrite(HHeaterRelay,RELAY_ON);digitalWrite(HChillRelay,RELAY_OFF);strcpy(HRelayStateStr,"HTR");} 
+    else {digitalWrite(HHeaterRelay,RELAY_OFF);digitalWrite(HChillRelay,RELAY_OFF);strcpy(HRelayStateStr,"OFF");}
+  }
+  
+
+  //***** UPDATE SERIAL *****
+  if(now_ms-SERIALt>SERIALwindow){
+    SerialReceive();
+    SerialSend();
+    SERIALt+=SERIALwindow;
+  }
+
+  //***** UPDATE LCD *****
+  if(NegIfRamping<0) {strcpy(holdsecsStr,"XX");strcpy(holdminsStr,"XX");strcpy(RampStatusStr,"R");} 
+  else {dtostrf(HOLDtsec/60,4,0,holdminsStr);dtostrf(HOLDtsec,4,0,holdsecsStr);strcpy(RampStatusStr,"H");}
+
+  if((now_ms - LCDt)>LCDwindow)
+  { 
+    lcd.clear();
+    lcd.setCursor(0,0);            
+    lcd.print("C");
+    if(digitalRead(CHeaterRelay)==RELAY_ON) 
+    {
+      lcd.print("+");
+    } else 
+    {  
+      if(digitalRead(CChillRelay)==RELAY_ON){
+        lcd.print("-");
+      }else{lcd.print(".");}
+    };
+    dtostrf(10*CTempOutput/TPCwindow,2,0,CTempOutputStr);
+    lcd.print(CTempOutputStr);lcd.print("|");
+    dtostrf(CTempInput,4,1,CTempInputStr);
+    lcd.print(CTempInputStr);lcd.print("|");
+    dtostrf(CSetPoint,2,0,CSetPointStr);
+    lcd.print(CSetPointStr);      
+
+    lcd.setCursor(0,1);            
+    lcd.print("H");
+    if(digitalRead(HHeaterRelay)==RELAY_ON) 
+    {
+      lcd.print("+");
+    } else 
+    {  
+      if(digitalRead(HChillRelay)==RELAY_ON){
+        lcd.print("-");
+      }else{lcd.print(".");}
+    };     
+    dtostrf(10*HTempOutput/TPCwindow,2,0,HTempOutputStr);
+    lcd.print(HTempOutputStr);lcd.print("|");
+    dtostrf(HTempInput,4,1,HTempInputStr);
+    lcd.print(HTempInputStr);lcd.print("|");
+    dtostrf(HSetPoint,2,0,HSetPointStr);
+    lcd.print(HSetPointStr);      
+    LCDt+=LCDwindow;
+  }
+}
+
+void SerialSend()
+{ 
+  if (SerialOutCount>100){
+    Serial.print("Date,N_ms,Th,Tm,Ts,");
+    Serial.print("CspT,CinT,CoutPID,CRelayState,");
+    Serial.print("C_PID_Kp,C_PID_Kp,C_PID_Kd,");
+    Serial.print("HspT,HinT,HoutPID,HRelayState,");
+    Serial.print("H_PID_Kp,H_PID_Kp,H_PID_Kd,");
+    Serial.print("RampStep,RampStatus,HoldTimeMins,HoldTimeSecs,NegIfRamp");
+    Serial.println();
+    logFile = SD.open("Log.txt", FILE_WRITE);
+    if (logFile) {
+    logFile.print("Date,N_ms,Th,Tm,Ts,");
+    logFile.print("CspT,CinT,CoutPID,CRelayState,");
+    logFile.print("C_PID_Kp,C_PID_Kp,C_PID_Kd,");
+    logFile.print("HspT,HinT,HoutPID,HRelayState,");
+    logFile.print("H_PID_Kp,H_PID_Kp,H_PID_Kd,");
+    logFile.print("RampStep,RampStatus,HoldTimeMins,HoldTimeSecs,NegIfRamp");
+    logFile.println();
+    }
+  logFile.close();
+  SerialOutCount=0; 
+  }
+  Serial.print(printdate),Serial.print(","),Serial.print(now_ms),Serial.print(","),Serial.print(hrsStr),Serial.print(","),Serial.print(minsStr),Serial.print(","),Serial.print(secsStr),Serial.print(",");
+  Serial.print(CSetPoint),Serial.print(","),Serial.print(CTempInput),Serial.print(","),Serial.print(CTempOutput),Serial.print(","),Serial.print(CRelayStateStr),Serial.print(",");
+  Serial.print(C_PID.GetKp()),Serial.print(","),Serial.print(C_PID.GetKi()),Serial.print(","),Serial.print(C_PID.GetKd()),Serial.print(",");
+  Serial.print(HSetPoint),Serial.print(","),Serial.print(HTempInput),Serial.print(","),Serial.print(HTempOutput),Serial.print(","),Serial.print(HRelayStateStr),Serial.print(",");
+  Serial.print(H_PID.GetKp()),Serial.print(","),Serial.print(H_PID.GetKi()),Serial.print(","),Serial.print(H_PID.GetKd()),Serial.print(",");
+  Serial.print(RampStep),Serial.print(","),Serial.print(RampStatusStr),Serial.print(","),Serial.print(holdminsStr),Serial.print(","),Serial.print(holdsecsStr),Serial.print(","),Serial.print(NegIfRamping);
+  Serial.println();
+  logFile = SD.open("log.txt", FILE_WRITE);
+  if (logFile) {
+  logFile.print(printdate),logFile.print(","),logFile.print(now_ms),logFile.print(","),logFile.print(hrsStr),logFile.print(","),logFile.print(minsStr),logFile.print(","),logFile.print(secsStr),logFile.print(",");
+  logFile.print(CSetPoint),logFile.print(","),logFile.print(CTempInput),logFile.print(","),logFile.print(CTempOutput),logFile.print(","),logFile.print(CRelayStateStr),logFile.print(",");
+  logFile.print(C_PID.GetKp()),logFile.print(","),logFile.print(C_PID.GetKi()),logFile.print(","),logFile.print(C_PID.GetKd()),logFile.print(",");
+  logFile.print(HSetPoint),logFile.print(","),logFile.print(HTempInput),logFile.print(","),logFile.print(HTempOutput),logFile.print(","),logFile.print(HRelayStateStr),logFile.print(",");
+  logFile.print(H_PID.GetKp()),logFile.print(","),logFile.print(H_PID.GetKi()),logFile.print(","),logFile.print(H_PID.GetKd()),logFile.print(",");
+  logFile.print(RampStep),logFile.print(","),logFile.print(RampStatusStr),logFile.print(","),logFile.print(holdminsStr),logFile.print(","),logFile.print(holdsecsStr),logFile.print(","),logFile.print(NegIfRamping);
+  logFile.println();
+
+  }
+  logFile.close();
+  SerialOutCount+=1;
+}
+
+void SerialReceive()
+{
+  if(Serial.available())
+  {
+   char b = Serial.read(); 
+   Serial.flush(); 
+  }
+}
+
